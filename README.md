@@ -35,9 +35,33 @@ The codebase also contains additional options such as LSQR labels, residual lear
 Run the 2D diagonal-slice active-learning workflow:
 
 ```bash
-python Stage_2_GP-toy2-2D-v18-v14.py \
+python GP-toy2-2D.py \
   --start_mode warm \
   --target_mode umb \
   --symmetry_mode none \
   --kernel_mode plain \
   --label_source oracle_paid
+
+### 2) Three-dimensional toy landscape
+Run the 2D diagonal-slice active-learning workflow:
+
+```bash
+python GP-toy-3D.py \
+  --start_mode warm \
+  --target_mode umb \
+  --symmetry_mode none \
+  --kernel_mode plain \
+  --label_source oracle_paid
+
+### 2) Three-dimensional MD-PIP landscape
+Run the 2D diagonal-slice active-learning workflow:
+
+```bash
+python GP-MD-PIP-3D.py \
+  --start_mode colde \
+  --target_mode umb \
+  --symmetry_mode sorted \
+  --kernel_mode plain \
+  --label_source oracle_paid
+
+
