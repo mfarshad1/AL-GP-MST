@@ -1,8 +1,8 @@
-# Graph-Constrained Active Learning for Many-Body Free-Energy Landscape Reconstruction
+# Graph-based Active Learning for Landscape Reconstruction with Minimum-spanning-tree Cost
 
 This repository contains code and analysis workflows supporting the paper:
 
-**“Graph-Constrained Active Learning for Many-Body Free-Energy Landscape Reconstruction”**  
+**``Graph-based Active Learning for Landscape Reconstruction with Minimum-spanning-tree Cost''**  
 Mohsen Farshad, [Coauthors]
 
 ## 🧠 Overview
