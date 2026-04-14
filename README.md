@@ -1,16 +1,16 @@
-# Graph-based Active Learning for Landscape Reconstruction with Minimum-spanning-tree Cost
+# Graph-based active learning for landscape reconstruction with minimum-spanning-tree cost
 
 This repository contains code and analysis workflows supporting the paper:
 
-**``Graph-based Active Learning for Landscape Reconstruction with Minimum-spanning-tree Cost''**  
-Mohsen Farshad, [Coauthors]
+**“Graph-based active learning for landscape reconstruction with minimum-spanning-tree cost”**  
+Mohsen Farshad, Şafak Çallıoğlu, Yilong Zhou, Gaurav Arya
 
 ## 🧠 Overview
-This repository implements a graph-constrained active-learning workflow to reconstruct many-body potentials of mean force (PMFs) from sparse, expensive labels in collective-variable space. The workflow combines analytical toy landscapes, a realistic MD-derived polymer-grafted nanoparticle (PGNP) benchmark represented by a smooth oracle surface, Gaussian Process (GP) regression, uncertainty-guided sequential sampling, and order-independent cost analysis based on the minimum spanning tree (MST) of the sampled set.
+This repository implements a graph-constrained active-learning workflow to reconstruct many-body potentials of mean force (PMFs) from sparse, expensive labels in collective-variable space. The workflow combines analytical toy landscapes, a realistic polymer-grafted nanoparticle (PGNP) triplet benchmark represented by a smooth oracle surface, Gaussian Process (GP) regression, uncertainty-guided sequential sampling, and order-independent cost analysis based on the minimum spanning tree (MST) of the sampled set.
 
 ## 📈 Method Flow
 - Discretize the feasible configuration space as a graph in interparticle-distance coordinates.
-- Define an oracle landscape:
+- Define oracle landscapes:
   - 2D toy diagonal slice
   - 3D toy landscape with pair and nonadditive three-body structure
   - realistic 3D PGNP benchmark from a smooth fitted oracle
@@ -22,7 +22,7 @@ This repository implements a graph-constrained active-learning workflow to recon
 
 ## 🗂️ Analysis pipeline (as used in this project)
 
-### 1. Two-dimensional toy landscape
+### Two-dimensional toy landscape
 Run the 2D diagonal-slice active-learning workflow:
 
 ```bash
