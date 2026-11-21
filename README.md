@@ -1,9 +1,11 @@
-# Graph-based active learning for landscape reconstruction with minimum-spanning-tree cost
+# Efficient Free-Energy Landscape Construction Using Graph-Based Active Path Sampling
 
 This repository contains code and analysis workflows supporting the paper:
 
-**“Graph-based active learning for landscape reconstruction with minimum-spanning-tree cost”**  
-Mohsen Farshad, Şafak Çallıoğlu, Yilong Zhou, Gaurav Arya
+**“Efficient Free-Energy Landscape Construction Using Graph-Based Active Path Sampling”**  
+Mohsen Farshad and Gaurav Arya
+
+**Acknowledgments:** Şafak Çallıoğlu and Yilong Zhou are acknowledged for their contributions, consistent with the manuscript.
 
 ## 🧠 Overview
 This repository implements a graph-constrained active-learning workflow to reconstruct many-body potentials of mean force (PMFs) from sparse, expensive labels in collective-variable space. The workflow combines analytical toy landscapes, a realistic polymer-grafted nanoparticle (PGNP) triplet benchmark represented by a smooth oracle surface, Gaussian Process (GP) regression, uncertainty-guided sequential sampling, and order-independent cost analysis based on the minimum spanning tree (MST) of the sampled set.
@@ -35,15 +37,17 @@ The codebase also contains additional options such as LSQR labels, residual lear
 Run the 2D diagonal-slice active-learning workflow:
 
 ```bash
-python GP-toy2-2D.py \
+python GP-toy-2D.py \
   --start_mode warm \
   --target_mode umb \
   --symmetry_mode none \
   --kernel_mode plain \
   --label_source oracle_paid
 
+```
+
 ### 2) Three-dimensional toy landscape
-Run the 2D diagonal-slice active-learning workflow:
+Run the 3D analytical active-learning workflow:
 
 ```bash
 python GP-toy-3D.py \
@@ -53,15 +57,16 @@ python GP-toy-3D.py \
   --kernel_mode plain \
   --label_source oracle_paid
 
-### 2) Three-dimensional MD-PIP landscape
-Run the 2D diagonal-slice active-learning workflow:
+```
+
+### 3) Three-dimensional MD-PIP landscape
+Run the 3D PGNP active-learning workflow:
 
 ```bash
 python GP-MD-PIP-3D.py \
-  --start_mode colde \
+  --start_mode cold \
   --target_mode umb \
   --symmetry_mode sorted \
   --kernel_mode plain \
   --label_source oracle_paid
-
-
+```
