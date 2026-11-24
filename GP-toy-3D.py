@@ -3,17 +3,17 @@
 # -*- coding: utf-8 -*-
 
 # =============================================================================
-# Stage-2 GP Umb 3D  (CLEANED, SINGLE-FILE, ALL FIGURES PRESERVED)
+# Stage-2 GP W3 3D  (CLEANED, SINGLE-FILE, ALL FIGURES PRESERVED)
 #
 # Results:
 #   - Oracle 3D scatter + diag slice (2D/3D) + face slice (2D/3D)
-#   - Oracle W3 3D scatter
+#   - Oracle W3 3D scatter
 #   - Optional full-grid LSQR diagnostic scatter
 #   - Optional per-step LSQR paid-vs-full-grid parity
 #   - Per-step: student ¼/Ã 3D scatter (with overlays)
 #   - Per-step: ¼/Ã diag slice (2D/3D), ¼ face slice (2D/3D)
-#   - Per-step: absolute error |pred - oracle| scatter + diag slice (2D/3D) + face slice (2D/3D)
-#   - Per-step: extracted W3 on diag and face (2D/3D)
+#   - Per-step: absolute error |pred - true| scatter + diag slice (2D/3D) + face slice (2D/3D)
+#   - Per-step: extracted W3 on diag and face (2D/3D)
 #   - Per-step: parity (train+val), RMSE trace, MST trace
 #   - Summary RMSE vs iter, MST vs iter
 # =============================================================================
@@ -40,9 +40,12 @@ _setup_mpl_tex_cache_to_tmp()
 # Imports
 # =============================================================================
 import argparse
+import csv
 import heapq
 import numpy as np
 import matplotlib as mpl
+# Keep the normal mathematical minus in tick labels; the hyphen-minus looked too narrow.
+mpl.rcParams["axes.unicode_minus"] = False
 import matplotlib.pyplot as plt
 
 import tensorflow as tf
@@ -53,7 +56,7 @@ from scipy.spatial import cKDTree
 from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import minimum_spanning_tree
 from scipy.sparse.linalg import lsqr
-from matplotlib.ticker import MaxNLocator
+from matplotlib.ticker import MaxNLocator, FuncFormatter
 
 # =============================================================================
 # CLI options
@@ -62,7 +65,7 @@ DEFAULT_START_MODE    = "warm"         # warm/cold
 DEFAULT_TARGET_MODE   = "umb"          # umb/residual
 DEFAULT_SYMM_MODE     = "none"         # sorted/invariants/none
 DEFAULT_KERNEL_MODE   = "plain"        # structured/plain
-DEFAULT_LABEL_SOURCE  = "oracle_paid"  # lsqr|oracle_paid|oracle_queried
+DEFAULT_LABEL_SOURCE  = "lsqr"  # pathint|lsqr|oracle_paid|oracle_queried
 
 RUN_TAG = "ToyUmbDirect"
 
@@ -76,9 +79,10 @@ def parse_cli():
                    help="Permutation-invariant inputs (PIP spirit): sorted or symmetric invariants")
     p.add_argument("--kernel_mode", choices=["structured", "plain"], default=DEFAULT_KERNEL_MODE,
                    help="structured=(1D+1D+1D)+3D, plain=use KERNEL_SPEC")
-    p.add_argument("--label_source", choices=["lsqr", "oracle_paid", "oracle_queried"],
+    p.add_argument("--label_source", choices=["pathint", "lsqr", "oracle_paid", "oracle_queried"],
                    default=DEFAULT_LABEL_SOURCE,
                    help=("Label source for GP training: "
+                         "pathint=on-the-fly path integration of exact forces on paid graph; "
                          "lsqr=LSQR from forces on paid graph; "
                          "oracle_paid=direct oracle energies on ALL paid nodes; "
                          "oracle_queried=direct oracle energies on QUERIED nodes only "
@@ -305,13 +309,18 @@ def _features_from_P(P, symmetry_mode="sorted"):
 
 # =============================================================================
 # STYLE / FLAGS
+#   Toy-model plotting style; matched to the final MD/PIP plotting layout.
 # =============================================================================
 LAB_X = r"$d_{13}\,(\sigma)$"
 LAB_Y = r"$d_{23}\,(\sigma)$"
 LAB_Z = r"$d_{12}\,(\sigma)$"
-LAB_C   = r"$U_{\mathrm{mb}}\,(k_{\mathrm{B}}T)$"
-LAB_DW3 = r"$\Delta W_3\,(k_{\mathrm{B}}T)$"
-LAB_ABSERR = r"$|U_{\mathrm{pred}}-U_{\mathrm{oracle}}|\,(k_{\mathrm{B}}T)$"
+LAB_W3_TRUE = r"$W_3^{\mathrm{True}}\,(k_{\mathrm{B}}T)$"
+LAB_W3_PRED = r"$W_3^{\mathrm{Pred}}\,(k_{\mathrm{B}}T)$"
+LAB_DW3_TRUE = LAB_W3_TRUE
+LAB_DW3_PRED = LAB_W3_PRED
+LAB_C = LAB_W3_PRED
+LAB_DW3 = LAB_DW3_PRED
+LAB_ABSERR = r"$|W_3^{\mathrm{Pred}} - W_3^{\mathrm{True}}|\,(k_{\mathrm{B}}T)$"
 ABSERR_CMAP = "magma"
 
 XLIM = (D13_MIN, D13_MAX)
@@ -324,16 +333,26 @@ CLIM_MAX = 20.0
 
 fig_scale = 2
 FIGSIZE_3D      = (6.0 * fig_scale, 4.5 * fig_scale)
-FIGSIZE_RMSE    = (4.5 * fig_scale, 3.6 * fig_scale)
+FIGSIZE_RMSE = (4.5 * fig_scale, 4.2 * fig_scale)
 FIGSIZE_SLICE2D = (4.8 * fig_scale, 3.9 * fig_scale)
-FIGSIZE_PARITY  = (4.5 * fig_scale, 4.2 * fig_scale)
+FIGSIZE_PARITY = (4.5 * fig_scale, 4.2 * fig_scale)
 
 AXIS_LABEL_FZ = 36
 TICK_LABEL_FZ = 30
-CBAR_FZ = 36
-CBAR_TICK_FZ = 30
+CBAR_FZ = AXIS_LABEL_FZ - 5.7
+CBAR_TICK_FZ = TICK_LABEL_FZ
 LEGEND_FZ = 30
 SHOW_TITLES = False
+
+# Keep original figure size; only give tick labels/marks more room.
+AXIS_TICK_PAD_3D = 12
+AXIS_TICK_PAD_3D_ALL = AXIS_TICK_PAD_3D * 0.5
+AXIS_TICK_PAD_2D = 8
+CBAR_TICK_PAD = 7
+AXIS_TICK_LENGTH = 6.0
+AXIS_TICK_WIDTH = 1.25
+CBAR_TICK_LENGTH = 5.5
+CBAR_TICK_WIDTH = 1.15
 
 VIEW_ELEV = 28
 VIEW_AZIM = -140
@@ -360,8 +379,10 @@ CAND_CMAP = "coolwarm"
 CAND_MARKER_SIZE = 28.0
 CAND_ALPHA = 0.95
 CAND_EDGE_LW = 0.25
-CAND_CBAR_PAD = 0.012
+CAND_CBAR_PAD = 0.001
+CAND_CBAR_YSHIFT = -0.025   # negative moves top colorbar closer to cube
 CAND_CBAR_H = 0.03
+CAND_CBAR_LABELPAD = 10     # keeps "Candidate score" away from the bar
 CAND_CBAR_LABEL = r"Candidate score"
 
 SLICE_N12 = 90
@@ -405,6 +426,17 @@ INIT_LSQR_KNN_MAX_DIST = None
 LSQR_KNN_K = INIT_LSQR_KNN_K
 LSQR_KNN_MAX_DIST = INIT_LSQR_KNN_MAX_DIST
 
+# LSQR edge-work integration.  The default now matches the continuous
+# line-integral implementation used in the force-only code: each LSQR edge
+# RHS is computed from Gauss-Legendre quadrature at in-between points along
+# the edge.  Set LSQR_INTEGRATION_MODE=endpoint to recover the old endpoint-
+# averaged force behavior.
+LSQR_INTEGRATION_MODE = os.environ.get("LSQR_INTEGRATION_MODE", "continuous").strip().lower()
+LSQR_USE_EDGE_QUADRATURE = int(os.environ.get("LSQR_USE_EDGE_QUADRATURE", "1")) != 0
+LSQR_EDGE_QUAD_ORDER = int(os.environ.get("LSQR_EDGE_QUAD_ORDER", 64))
+LSQR_EDGE_BATCH_SIZE = int(os.environ.get("LSQR_EDGE_BATCH_SIZE", 3000))
+PATHINT_QUAD_ORDER = int(os.environ.get("PATHINT_QUAD_ORDER", 64))
+
 # INIT_EDGE_COUNT       = 2
 # INIT_FACE_DIAG_COUNT  = 0
 # INIT_SPACE_DIAG_COUNT = 0
@@ -414,6 +446,10 @@ INIT_FACE_DIAG_COUNT  = int(os.environ.get("INIT_FACE_DIAG_COUNT", 0))
 INIT_SPACE_DIAG_COUNT = int(os.environ.get("INIT_SPACE_DIAG_COUNT", 0))
 
 FIG_DIR = None
+
+# Save the numerical data plotted in each figure without changing the analysis.
+SAVE_FIGURE_DATA = True
+FIG_DATA_SUBDIR = "figure_data"
 
 MARKER_SCALE = 8.0
 MS_TRAIN  = 18 * MARKER_SCALE
@@ -434,48 +470,180 @@ OVERLAY_ORDER_MODE = "mst_last"
 Z_VAL, Z_TRAIN, Z_KNN, Z_MST, Z_ANCHOR = 1, 2, 3, 4, 5
 
 FORCE_TEXT2D_ZLABEL = True
-ZLABEL_2D_X = -0.12
-ZLABEL_2D_Y = 0.52
+ZLABEL_2D_X = -0.1
+ZLABEL_2D_Y = 0.50
 
-USE_LATEX = True
+USE_LATEX = False
 if USE_LATEX:
     from matplotlib import rc, rcParams
+
     path_add = os.path.expanduser("~/.TinyTeX/bin/x86_64-linux")
     os.environ["PATH"] = path_add + ":" + os.environ.get("PATH", "")
     os.environ.pop("PERL5LIB", None)
+
     rc("text", usetex=True)
     rcParams["text.latex.preamble"] = (
         r"\usepackage{amsmath}\usepackage[T1]{fontenc}"
-        r"\usepackage{lmodern}\usepackage[strings]{underscore}"
+        r"\usepackage{helvet}"
+        r"\usepackage{sansmath}\sansmath"
+        r"\renewcommand{\familydefault}{\sfdefault}"
+        r"\usepackage[strings]{underscore}"
     )
-    rc("font", family="serif")
+    rc("font", family="sans-serif")
 else:
     mpl.rcParams["text.usetex"] = False
+
+# With helvet+sansmath, plain \Delta can render as a black square.
+# Use upright sans-serif Delta so it is nonitalic and does not become a box.
+LAB_DW3_TRUE = r"$\mathsf{\Delta} W_3^{\mathrm{True}}\,(k_{\mathrm{B}}T)$"
+LAB_DW3_PRED = r"$\mathsf{\Delta} W_3^{\mathrm{Pred}}\,(k_{\mathrm{B}}T)$"
+LAB_DW3 = LAB_DW3_PRED
 
 # =============================================================================
 # Utilities
 # =============================================================================
+
+def _safe_output_name(name):
+    safe_name = str(name)
+    for a, b in (("$", ""), ("\\", ""), ("{", ""), ("}", ""), ("^", ""), (" ", "_"), ("/", "_"), (",", ""), ("(", ""), (")", "")):
+        safe_name = safe_name.replace(a, b)
+    return safe_name.replace("mathrm", "").replace("W_3", "W3")
+
+
+def _figure_data_dir():
+    global FIG_DIR
+    if FIG_DIR is None:
+        FIG_DIR = Path("./figs_UNSET")
+        FIG_DIR.mkdir(exist_ok=True)
+    out = FIG_DIR / FIG_DATA_SUBDIR
+    out.mkdir(parents=True, exist_ok=True)
+    return out
+
+
+def save_numeric_figure_data(name, values, header, suffix=""):
+    if not SAVE_FIGURE_DATA:
+        return
+    path = _figure_data_dir() / f"{_safe_output_name(name)}{suffix}.csv"
+    np.savetxt(
+        path, np.asarray(values, float), delimiter=",",
+        header=header, comments="", fmt="%.10e"
+    )
+
+
+def save_scatter_figure_data(name, Pxyz, values):
+    Pxyz = np.asarray(Pxyz, float)
+    values = np.asarray(values, float).reshape(-1)
+    out = np.column_stack([Pxyz[:, 0], Pxyz[:, 1], Pxyz[:, 2], values])
+    save_numeric_figure_data(name, out, "d13_sigma,d23_sigma,d12_sigma,plotted_value")
+
+
+def save_diag_slice_figure_data(name, D12s, D13s, Z, mask):
+    out = np.column_stack([
+        np.asarray(D13s, float).ravel(order="C"),
+        np.asarray(D13s, float).ravel(order="C"),
+        np.asarray(D12s, float).ravel(order="C"),
+        np.asarray(Z, float).ravel(order="C"),
+        np.asarray(mask, bool).ravel(order="C").astype(int),
+    ])
+    save_numeric_figure_data(name, out, "d13_sigma,d23_sigma,d12_sigma,plotted_value,feasible")
+
+
+def save_face_slice_figure_data(name, d13f, d23f, Z, mask):
+    D13f, D23f = np.meshgrid(np.asarray(d13f, float), np.asarray(d23f, float), indexing="xy")
+    D12f = np.full_like(D13f, float(D12_MIN))
+    out = np.column_stack([
+        D13f.ravel(order="C"), D23f.ravel(order="C"), D12f.ravel(order="C"),
+        np.asarray(Z, float).ravel(order="C"),
+        np.asarray(mask, bool).ravel(order="C").astype(int),
+    ])
+    save_numeric_figure_data(name, out, "d13_sigma,d23_sigma,d12_sigma,plotted_value,feasible")
+
+
+def save_overlay_figure_data(name, info):
+    if (not SAVE_FIGURE_DATA) or (not isinstance(info, dict)):
+        return
+
+    Pall = np.asarray(info["Pall"], float)
+    train_all_idx = np.asarray(info.get("train_all_idx", []), dtype=int)
+    train_q_idx = np.asarray(info.get("train_q_idx", []), dtype=int)
+    val_idx = np.asarray(info.get("val_idx", []), dtype=int)
+    val_idx = val_idx[:min(15000, val_idx.size)]
+    anchor_idx = int(info["anchor_idx"])
+    knn_idx = np.asarray(info.get("knn_idx", []), dtype=int)
+    score_map = info.get("knn_score_map", None) or {}
+    step0_edges = info.get("step0_overlay_edges", None) or []
+    allowed_all = info.get("mst_allowed_edges_all", None)
+    allowed_q = info.get("mst_allowed_edges_q", None)
+
+    base = _safe_output_name(name)
+    with open(_figure_data_dir() / f"{base}_overlay_points.csv", "w", newline="") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(["kind", "node_index", "d13_sigma", "d23_sigma", "d12_sigma", "candidate_score"])
+        for kind, idxs in (("paid", train_all_idx), ("queried_for_mst", train_q_idx), ("validation", val_idx)):
+            for g in idxs:
+                writer.writerow([kind, int(g), f"{Pall[g, 0]:.10e}", f"{Pall[g, 1]:.10e}", f"{Pall[g, 2]:.10e}", ""])
+        if SHOW_CAND_OVERLAY and isinstance(score_map, dict):
+            for g in knn_idx:
+                score = score_map.get(int(g), np.nan)
+                if np.isfinite(score):
+                    writer.writerow(["candidate", int(g), f"{Pall[g, 0]:.10e}", f"{Pall[g, 1]:.10e}", f"{Pall[g, 2]:.10e}", f"{float(score):.10e}"])
+        writer.writerow(["anchor", anchor_idx, f"{Pall[anchor_idx, 0]:.10e}", f"{Pall[anchor_idx, 1]:.10e}", f"{Pall[anchor_idx, 2]:.10e}", ""])
+
+    def _mst_edges(idxs, allowed_edges):
+        idxs = np.asarray(idxs, dtype=int)
+        if idxs.size < 2:
+            return []
+        if allowed_edges is not None and len(allowed_edges) > 0:
+            return mst_edges_over_allowed_edges(Pall, idxs, allowed_edges)
+        pts = Pall[idxs]
+        D = np.linalg.norm(pts[:, None, :] - pts[None, :, :], axis=2)
+        G = minimum_spanning_tree(coo_matrix(D)).tocoo()
+        return [(int(idxs[i]), int(idxs[j])) for i, j in zip(G.row, G.col)]
+
+    with open(_figure_data_dir() / f"{base}_overlay_edges.csv", "w", newline="") as fh:
+        writer = csv.writer(fh)
+        writer.writerow([
+            "kind", "node_index_1", "node_index_2",
+            "d13_1_sigma", "d23_1_sigma", "d12_1_sigma",
+            "d13_2_sigma", "d23_2_sigma", "d12_2_sigma"
+        ])
+        for kind, edges in (
+            ("mst_paid", _mst_edges(train_all_idx, allowed_all)),
+            ("mst_queried", _mst_edges(train_q_idx, allowed_q)),
+            ("step0_geometry", step0_edges),
+        ):
+            for g0, g1 in edges:
+                writer.writerow([
+                    kind, int(g0), int(g1),
+                    f"{Pall[g0, 0]:.10e}", f"{Pall[g0, 1]:.10e}", f"{Pall[g0, 2]:.10e}",
+                    f"{Pall[g1, 0]:.10e}", f"{Pall[g1, 1]:.10e}", f"{Pall[g1, 2]:.10e}"
+                ])
+
+
 def savefig(fig, name, extra_artists=None):
     global FIG_DIR
     if FIG_DIR is None:
         FIG_DIR = Path("./figs_UNSET")
         FIG_DIR.mkdir(exist_ok=True)
-    path = FIG_DIR / f"{name}.pdf"
+    safe_name = _safe_output_name(name)
+    path = FIG_DIR / f"{safe_name}.pdf"
     prev_usetex = mpl.rcParams.get("text.usetex", False)
     try:
         fig.canvas.draw()
-        fig.savefig(path, bbox_inches="tight", pad_inches=0.25,
-                    bbox_extra_artists=extra_artists)
+        fig.savefig(path, bbox_inches="tight", pad_inches=0.40,
+                    bbox_extra_artists=extra_artists, dpi=300)
     except Exception as e:
         print(f"[WARN] LaTeX draw failed: {e}\n Falling back to mathtext for this figure only.")
         try:
             mpl.rcParams["text.usetex"] = False
+            # Keep labels unchanged in fallback; \mathsf{\Delta} works in both
+            # LaTeX and mathtext and stays nonitalic.
             fig.canvas.draw()
         except Exception as e2:
             print(f"[WARN] mathtext draw also failed: {e2}")
         finally:
-            fig.savefig(path, bbox_inches="tight", pad_inches=0.25,
-                        bbox_extra_artists=extra_artists)
+            fig.savefig(path, bbox_inches="tight", pad_inches=0.40,
+                        bbox_extra_artists=extra_artists, dpi=300)
             mpl.rcParams["text.usetex"] = prev_usetex
     plt.show()
 
@@ -760,14 +928,97 @@ def _apply_axis_inversions(ax, swap_xy=None):
     if REVERSE_Z:
         ax.invert_zaxis()
 
+def _compact_number_label(x, pos=None):
+    """Compact tick labels: -10 instead of -10.0, but keep decimals if needed."""
+    try:
+        x = float(x)
+    except Exception:
+        return str(x)
+    if abs(x) < 1e-12:
+        x = 0.0
+    if np.isclose(x, np.round(x), atol=1e-9):
+        s = f"{int(np.round(x))}"
+    else:
+        s = f"{x:g}"
+    if mpl.rcParams.get("axes.unicode_minus", True):
+        s = s.replace("-", "−")
+    return s
+
+COMPACT_TICK_FORMATTER = FuncFormatter(_compact_number_label)
+
+
+def _distance_ticks(lim):
+    lo = int(np.ceil(float(lim[0])))
+    hi = int(np.floor(float(lim[1])))
+    return np.arange(lo, hi + 1, 1.0) if hi >= lo else None
+
+def _apply_distance_ticks_3d(ax, xlim, ylim, zlim=None):
+    xt = _distance_ticks(xlim)
+    yt = _distance_ticks(ylim)
+    if xt is not None: ax.set_xticks(xt)
+    if yt is not None: ax.set_yticks(yt)
+    if zlim is not None:
+        zt = _distance_ticks(zlim)
+        if zt is not None: ax.set_zticks(zt)
+    ax.xaxis.set_major_formatter(COMPACT_TICK_FORMATTER)
+    ax.yaxis.set_major_formatter(COMPACT_TICK_FORMATTER)
+    ax.zaxis.set_major_formatter(COMPACT_TICK_FORMATTER)
+
+def _format_energy_zaxis(ax):
+    # Prefer integer energy ticks where possible. If the z range is too small,
+    # MaxNLocator will still allow decimals, but the formatter removes .0.
+    try:
+        ax.zaxis.set_major_locator(MaxNLocator(nbins=5, min_n_ticks=3, integer=True))
+    except TypeError:
+        ax.zaxis.set_major_locator(MaxNLocator(nbins=5, integer=True))
+    ax.zaxis.set_major_formatter(COMPACT_TICK_FORMATTER)
+
+def _format_colorbar_ticks(cb):
+    cb.ax.yaxis.set_major_formatter(COMPACT_TICK_FORMATTER)
+    cb.ax.xaxis.set_major_formatter(COMPACT_TICK_FORMATTER)
+
+def _adjust_pinned_zlabel_for_ticks(ax, z_art):
+    if z_art is None:
+        return
+    labels = [_compact_number_label(v) for v in ax.get_zticks()]
+    max_chars = max((len(s) for s in labels), default=0)
+    # Shift only when tick labels are genuinely long, so short-label plots do
+    # not get an unnecessarily large gap.
+    x = float(ZLABEL_2D_X) - max(0, max_chars - 3) * 0.014
+    z_art.set_position((x, float(ZLABEL_2D_Y)))
+
+def _apply_distance_ticks_2d(ax, xlim, ylim):
+    xt = _distance_ticks(xlim)
+    yt = _distance_ticks(ylim)
+    if xt is not None: ax.set_xticks(xt)
+    if yt is not None: ax.set_yticks(yt)
+    ax.xaxis.set_major_formatter(COMPACT_TICK_FORMATTER)
+    ax.yaxis.set_major_formatter(COMPACT_TICK_FORMATTER)
+
+def _make_3d_ticks_visible(ax):
+    # mplot3d tick marks can become visually hidden unless their 3D tick
+    # factors are explicitly made outward-facing.
+    for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
+        try:
+            axis._axinfo["tick"]["inward_factor"] = 0.0
+            axis._axinfo["tick"]["outward_factor"] = 0.28
+            axis._axinfo["tick"]["linewidth"] = {
+                True: AXIS_TICK_WIDTH,
+                False: AXIS_TICK_WIDTH,
+            }
+        except Exception:
+            pass
+
 def _add_top_colorbar(fig, ax, mappable, label):
     pos = ax.get_position()
-    cax = fig.add_axes([pos.x0, pos.y1 + CAND_CBAR_PAD, pos.width, CAND_CBAR_H])
+    cax = fig.add_axes([pos.x0, pos.y1 + CAND_CBAR_PAD + CAND_CBAR_YSHIFT, pos.width, CAND_CBAR_H])
     cb = fig.colorbar(mappable, cax=cax, orientation="horizontal")
     cb.ax.xaxis.set_ticks_position("top")
     cb.ax.xaxis.set_label_position("top")
-    cb.set_label(label, fontsize=CBAR_FZ, labelpad=10)
-    cb.ax.tick_params(labelsize=CBAR_TICK_FZ, pad=6)
+    cb.set_label(label, fontsize=CBAR_FZ, labelpad=CAND_CBAR_LABELPAD)
+    cb.ax.tick_params(labelsize=TICK_LABEL_FZ - 6, pad=CBAR_TICK_PAD,
+                      length=CBAR_TICK_LENGTH, width=CBAR_TICK_WIDTH)
+    _format_colorbar_ticks(cb)
     return cb
 
 def _pin_3d_zlabel_2d(ax, label, fontsize, x=ZLABEL_2D_X, y=ZLABEL_2D_Y):
@@ -808,19 +1059,20 @@ def plot_scatter3d_color(Pxyz, C, clabel, name, title,
                     linewidths=0, alpha=0.85,
                     depthshade=False, zorder=0)
 
-    ax.set_xlabel(lx, fontsize=AXIS_LABEL_FZ, labelpad=20)
-    ax.set_ylabel(ly, fontsize=AXIS_LABEL_FZ, labelpad=20)
+    ax.set_xlabel(lx, fontsize=AXIS_LABEL_FZ, labelpad=26)
+    ax.set_ylabel(ly, fontsize=AXIS_LABEL_FZ, labelpad=26)
 
     z_art = None
     if FORCE_TEXT2D_ZLABEL:
-        z_art = _pin_3d_zlabel_2d(ax, lz, AXIS_LABEL_FZ, x=-0.05, y=ZLABEL_2D_Y)
+        z_art = _pin_3d_zlabel_2d(ax, lz, AXIS_LABEL_FZ, x=ZLABEL_2D_X, y=ZLABEL_2D_Y)
     else:
         ax.set_zlabel(lz, fontsize=AXIS_LABEL_FZ, labelpad=10)
 
     if SHOW_TITLES:
-        ax.set_title(title, fontsize=LEGEND_FZ + 2, pad=10)
+        ax.set_title(title, fontsize=LEGEND_FZ + 2, pad=0)
 
     ax.set_xlim(xlim); ax.set_ylim(ylim); ax.set_zlim(zlim)
+    _apply_distance_ticks_3d(ax, xlim, ylim, zlim)
     try:
         ax.set_box_aspect(((xlim[1]-xlim[0]), (ylim[1]-ylim[0]), Z_BOX_SCALE*(zlim[1]-zlim[0])))
     except Exception:
@@ -828,13 +1080,20 @@ def plot_scatter3d_color(Pxyz, C, clabel, name, title,
 
     ax.view_init(elev=float(VIEW_ELEV), azim=float(VIEW_AZIM))
     _apply_axis_inversions(ax, swap_xy=scatter_swap_xy)
-    ax.tick_params(axis="x", labelsize=TICK_LABEL_FZ, pad=3)
-    ax.tick_params(axis="y", labelsize=TICK_LABEL_FZ, pad=3)
-    ax.tick_params(axis="z", labelsize=TICK_LABEL_FZ, pad=3)
+    ax.tick_params(axis="x", labelsize=TICK_LABEL_FZ - 6, pad=AXIS_TICK_PAD_3D_ALL,
+                   length=AXIS_TICK_LENGTH, width=AXIS_TICK_WIDTH)
+    ax.tick_params(axis="y", labelsize=TICK_LABEL_FZ - 6, pad=AXIS_TICK_PAD_3D_ALL,
+                   length=AXIS_TICK_LENGTH, width=AXIS_TICK_WIDTH)
+    ax.tick_params(axis="z", labelsize=TICK_LABEL_FZ - 6, pad=AXIS_TICK_PAD_3D_ALL,
+                   length=AXIS_TICK_LENGTH, width=AXIS_TICK_WIDTH)
+    _adjust_pinned_zlabel_for_ticks(ax, z_art)
+    _make_3d_ticks_visible(ax)
 
     cb = fig.colorbar(sc, ax=ax, shrink=0.78, pad=0.05)
-    cb.set_label(clabel, fontsize=CBAR_FZ, labelpad=10)
-    cb.ax.tick_params(labelsize=CBAR_TICK_FZ, pad=6)
+    cb.set_label(clabel, fontsize=AXIS_LABEL_FZ, labelpad=12)
+    cb.ax.tick_params(labelsize=TICK_LABEL_FZ - 6, pad=CBAR_TICK_PAD,
+                      length=CBAR_TICK_LENGTH, width=CBAR_TICK_WIDTH)
+    _format_colorbar_ticks(cb)
     if cbar_ticks is not None:
         cb.set_ticks(cbar_ticks)
 
@@ -843,6 +1102,9 @@ def plot_scatter3d_color(Pxyz, C, clabel, name, title,
         _add_top_colorbar(fig, ax, extra["knn_mappable"], extra.get("knn_label", CAND_CBAR_LABEL))
 
     extra_artists = [z_art] if z_art is not None else None
+    save_scatter_figure_data(name, Pxyz, C)
+    if callable(overlay) and hasattr(overlay, "figure_data"):
+        save_overlay_figure_data(name, overlay.figure_data)
     savefig(fig, name, extra_artists=extra_artists)
 
 # =============================================================================
@@ -870,19 +1132,22 @@ def plot_slice_2d_heat(D12s, D13s, Z, m, name, title, clabel, cmap="viridis", no
     y = D12s[:, 0]
     fig, ax = plt.subplots(figsize=FIGSIZE_SLICE2D)
     pc = ax.pcolormesh(x, y, Zm, shading="auto", cmap=cmap, norm=norm)
-    ax.set_xlabel(r"$d_{13}=d_{23}\,(\sigma)$", fontsize=AXIS_LABEL_FZ)
-    ax.set_ylabel(r"$d_{12}\,(\sigma)$", fontsize=AXIS_LABEL_FZ)
+    ax.set_xlabel(r"$d_{13}=d_{23}\,(\sigma)$", fontsize=AXIS_LABEL_FZ + 6, labelpad=10)
+    ax.set_ylabel(r"$d_{12}\,(\sigma)$", fontsize=AXIS_LABEL_FZ + 6, labelpad=10)
 
-    ax.set_xticks(np.arange(np.floor(x.min()), np.ceil(x.max()) + 1e-9, 1.0))
-    ax.set_yticks(np.arange(np.floor(y.min()), np.ceil(y.max()) + 1e-9, 1.0))
+    _apply_distance_ticks_2d(ax, (x.min(), x.max()), (y.min(), y.max()))
 
-    ax.tick_params(axis="both", labelsize=TICK_LABEL_FZ, pad=6)
+    ax.tick_params(axis="both", labelsize=TICK_LABEL_FZ, pad=AXIS_TICK_PAD_2D,
+                   length=AXIS_TICK_LENGTH, width=AXIS_TICK_WIDTH)
     if REVERSE_DIAG_X_2D: ax.invert_xaxis()
     if REVERSE_DIAG_Y_2D: ax.invert_yaxis()
     if SHOW_TITLES: ax.set_title(title, fontsize=LEGEND_FZ + 2, pad=10)
     cb = fig.colorbar(pc, ax=ax, pad=0.02)
-    cb.set_label(clabel, fontsize=CBAR_FZ, labelpad=10)
-    cb.ax.tick_params(labelsize=CBAR_TICK_FZ, pad=6)
+    cb.set_label(clabel, fontsize=AXIS_LABEL_FZ, labelpad=12)
+    cb.ax.tick_params(labelsize=CBAR_TICK_FZ, pad=CBAR_TICK_PAD,
+                      length=CBAR_TICK_LENGTH, width=CBAR_TICK_WIDTH)
+    _format_colorbar_ticks(cb)
+    save_diag_slice_figure_data(name, D12s, D13s, Z, m)
     savefig(fig, name)
 
 def plot_slice_3d_surface(D12s, D13s, Z, m, name, title, clabel, cmap="viridis", norm=None):
@@ -900,8 +1165,8 @@ def plot_slice_3d_surface(D12s, D13s, Z, m, name, title, clabel, cmap="viridis",
         try: ax.set_proj_type("ortho")
         except Exception: pass
     surf = ax.plot_surface(D13s, D12s, Zm, cmap=cmap, norm=norm, linewidth=0, antialiased=True)
-    ax.set_xlabel(r"$d_{13}=d_{23}\,(\sigma)$", fontsize=AXIS_LABEL_FZ, labelpad=20)
-    ax.set_ylabel(r"$d_{12}\,(\sigma)$", fontsize=AXIS_LABEL_FZ, labelpad=20)
+    ax.set_xlabel(r"$d_{13}=d_{23}\,(\sigma)$", fontsize=AXIS_LABEL_FZ, labelpad=26)
+    ax.set_ylabel(r"$d_{12}\,(\sigma)$", fontsize=AXIS_LABEL_FZ, labelpad=26)
 
     z_art = None
     if FORCE_TEXT2D_ZLABEL:
@@ -911,6 +1176,7 @@ def plot_slice_3d_surface(D12s, D13s, Z, m, name, title, clabel, cmap="viridis",
 
     if SHOW_TITLES: ax.set_title(title, fontsize=LEGEND_FZ + 2, pad=10)
     ax.set_xlim(D13_MIN, D13_MAX); ax.set_ylim(D12_MIN, D12_MAX)
+    _apply_distance_ticks_3d(ax, (D13_MIN, D13_MAX), (D12_MIN, D12_MAX), None)
     if REVERSE_DIAG_X_3D: ax.invert_xaxis()
     if REVERSE_DIAG_Y_3D: ax.invert_yaxis()
     try:
@@ -918,30 +1184,42 @@ def plot_slice_3d_surface(D12s, D13s, Z, m, name, title, clabel, cmap="viridis",
     except Exception:
         pass
     ax.view_init(elev=float(SLICE_VIEW_ELEV), azim=float(SLICE_VIEW_AZIM))
-    ax.tick_params(axis="x", labelsize=TICK_LABEL_FZ, pad=3)
-    ax.tick_params(axis="y", labelsize=TICK_LABEL_FZ, pad=3)
-    ax.tick_params(axis="z", labelsize=TICK_LABEL_FZ, pad=3)
+    ax.tick_params(axis="x", labelsize=TICK_LABEL_FZ - 6, pad=AXIS_TICK_PAD_3D_ALL,
+                   length=AXIS_TICK_LENGTH, width=AXIS_TICK_WIDTH)
+    ax.tick_params(axis="y", labelsize=TICK_LABEL_FZ - 6, pad=AXIS_TICK_PAD_3D_ALL,
+                   length=AXIS_TICK_LENGTH, width=AXIS_TICK_WIDTH)
+    ax.tick_params(axis="z", labelsize=TICK_LABEL_FZ - 6, pad=AXIS_TICK_PAD_3D_ALL,
+                   length=AXIS_TICK_LENGTH, width=AXIS_TICK_WIDTH)
+    _format_energy_zaxis(ax)
+    _adjust_pinned_zlabel_for_ticks(ax, z_art)
+    _make_3d_ticks_visible(ax)
     cb = fig.colorbar(surf, ax=ax, shrink=0.78, pad=0.05)
-    cb.set_label(clabel, fontsize=CBAR_FZ, labelpad=10)
-    cb.ax.tick_params(labelsize=CBAR_TICK_FZ, pad=6)
+    cb.set_label(clabel, fontsize=AXIS_LABEL_FZ, labelpad=12)
+    cb.ax.tick_params(labelsize=TICK_LABEL_FZ - 6, pad=CBAR_TICK_PAD,
+                      length=CBAR_TICK_LENGTH, width=CBAR_TICK_WIDTH)
+    _format_colorbar_ticks(cb)
     extra_artists = [z_art] if z_art is not None else None
+    save_diag_slice_figure_data(name, D12s, D13s, Z, m)
     savefig(fig, name, extra_artists=extra_artists)
 
 def plot_face_2d_heat(d13f, d23f, Z, m, name, title, clabel, cmap="viridis", norm=None):
     Zm = np.where(m, Z, np.nan)
     fig, ax = plt.subplots(figsize=FIGSIZE_SLICE2D)
     pc = ax.pcolormesh(d13f, d23f, Zm, shading="auto", cmap=cmap, norm=norm)
-    ax.set_xlabel(r"$d_{13}\,(\sigma)$", fontsize=AXIS_LABEL_FZ)
-    ax.set_ylabel(r"$d_{23}\,(\sigma)$", fontsize=AXIS_LABEL_FZ)
-    ax.tick_params(axis="both", labelsize=TICK_LABEL_FZ, pad=6)
+    ax.set_xlabel(r"$d_{13}\,(\sigma)$", fontsize=AXIS_LABEL_FZ + 6, labelpad=10)
+    ax.set_ylabel(r"$d_{23}\,(\sigma)$", fontsize=AXIS_LABEL_FZ + 6, labelpad=10)
+    ax.tick_params(axis="both", labelsize=TICK_LABEL_FZ, pad=AXIS_TICK_PAD_2D,
+                   length=AXIS_TICK_LENGTH, width=AXIS_TICK_WIDTH)
     if REVERSE_FACE_X_2D: ax.invert_xaxis()
     if REVERSE_FACE_Y_2D: ax.invert_yaxis()
     if SHOW_TITLES: ax.set_title(title, fontsize=LEGEND_FZ + 2, pad=10)
     cb = fig.colorbar(pc, ax=ax, pad=0.02)
-    cb.set_label(clabel, fontsize=CBAR_FZ, labelpad=10)
-    cb.ax.tick_params(labelsize=CBAR_TICK_FZ, pad=6)
-    ax.set_xticks(np.arange(np.floor(d13f.min()), np.ceil(d13f.max()) + 1e-9, 1.0))
-    ax.set_yticks(np.arange(np.floor(d23f.min()), np.ceil(d23f.max()) + 1e-9, 1.0))
+    cb.set_label(clabel, fontsize=AXIS_LABEL_FZ, labelpad=12)
+    cb.ax.tick_params(labelsize=CBAR_TICK_FZ, pad=CBAR_TICK_PAD,
+                      length=CBAR_TICK_LENGTH, width=CBAR_TICK_WIDTH)
+    _format_colorbar_ticks(cb)
+    _apply_distance_ticks_2d(ax, (d13f.min(), d13f.max()), (d23f.min(), d23f.max()))
+    save_face_slice_figure_data(name, d13f, d23f, Z, m)
     savefig(fig, name)
 
 def plot_face_3d_surface(D13f, D23f, Z, m, name, title, clabel, cmap="viridis", norm=None):
@@ -959,8 +1237,8 @@ def plot_face_3d_surface(D13f, D23f, Z, m, name, title, clabel, cmap="viridis", 
         try: ax.set_proj_type("ortho")
         except Exception: pass
     surf = ax.plot_surface(D13f, D23f, Zm, cmap=cmap, norm=norm, linewidth=0, antialiased=True)
-    ax.set_xlabel(r"$d_{13}\,(\sigma)$", fontsize=AXIS_LABEL_FZ, labelpad=20)
-    ax.set_ylabel(r"$d_{23}\,(\sigma)$", fontsize=AXIS_LABEL_FZ, labelpad=20)
+    ax.set_xlabel(r"$d_{13}\,(\sigma)$", fontsize=AXIS_LABEL_FZ, labelpad=26)
+    ax.set_ylabel(r"$d_{23}\,(\sigma)$", fontsize=AXIS_LABEL_FZ, labelpad=26)
 
     z_art = None
     if FORCE_TEXT2D_ZLABEL:
@@ -970,6 +1248,7 @@ def plot_face_3d_surface(D13f, D23f, Z, m, name, title, clabel, cmap="viridis", 
 
     if SHOW_TITLES: ax.set_title(title, fontsize=LEGEND_FZ + 2, pad=10)
     ax.set_xlim(D13_MIN, D13_MAX); ax.set_ylim(D23_MIN, D23_MAX)
+    _apply_distance_ticks_3d(ax, (D13_MIN, D13_MAX), (D23_MIN, D23_MAX), None)
     if REVERSE_FACE_X_3D: ax.invert_xaxis()
     if REVERSE_FACE_Y_3D: ax.invert_yaxis()
     try:
@@ -977,13 +1256,22 @@ def plot_face_3d_surface(D13f, D23f, Z, m, name, title, clabel, cmap="viridis", 
     except Exception:
         pass
     ax.view_init(elev=float(SLICE_VIEW_ELEV), azim=float(SLICE_VIEW_AZIM))
-    ax.tick_params(axis="x", labelsize=TICK_LABEL_FZ, pad=3)
-    ax.tick_params(axis="y", labelsize=TICK_LABEL_FZ, pad=3)
-    ax.tick_params(axis="z", labelsize=TICK_LABEL_FZ, pad=3)
+    ax.tick_params(axis="x", labelsize=TICK_LABEL_FZ - 6, pad=AXIS_TICK_PAD_3D_ALL,
+                   length=AXIS_TICK_LENGTH, width=AXIS_TICK_WIDTH)
+    ax.tick_params(axis="y", labelsize=TICK_LABEL_FZ - 6, pad=AXIS_TICK_PAD_3D_ALL,
+                   length=AXIS_TICK_LENGTH, width=AXIS_TICK_WIDTH)
+    ax.tick_params(axis="z", labelsize=TICK_LABEL_FZ - 6, pad=AXIS_TICK_PAD_3D_ALL,
+                   length=AXIS_TICK_LENGTH, width=AXIS_TICK_WIDTH)
+    _format_energy_zaxis(ax)
+    _adjust_pinned_zlabel_for_ticks(ax, z_art)
+    _make_3d_ticks_visible(ax)
     cb = fig.colorbar(surf, ax=ax, shrink=0.78, pad=0.05)
-    cb.set_label(clabel, fontsize=CBAR_FZ, labelpad=10)
-    cb.ax.tick_params(labelsize=CBAR_TICK_FZ, pad=6)
+    cb.set_label(clabel, fontsize=AXIS_LABEL_FZ, labelpad=12)
+    cb.ax.tick_params(labelsize=TICK_LABEL_FZ - 6, pad=CBAR_TICK_PAD,
+                      length=CBAR_TICK_LENGTH, width=CBAR_TICK_WIDTH)
+    _format_colorbar_ticks(cb)
     extra_artists = [z_art] if z_art is not None else None
+    save_face_slice_figure_data(name, D13f[0, :], D23f[:, 0], Z, m)
     savefig(fig, name, extra_artists=extra_artists)
 
 # =============================================================================
@@ -1186,11 +1474,110 @@ def build_edges_knn_from_nodes(nodes_set, P_full, k=10, max_dist=None):
                 edges.add((i, j))
     return list(edges)
 
+def _edge_work_quadrature_3d(p0, p1, quad_order=None):
+    """Integrate dU = grad(U) . dx along one 3D grid edge.
+
+    The 3D grid uses P=(d13, d23, d12).  forces_Umb(d12,d13,d23)
+    returns (dU/dd12, dU/dd13, dU/dd23), so the dot product in P-space is
+    dU/dd13*dd13 + dU/dd23*dd23 + dU/dd12*dd12.
+    """
+    p0 = np.asarray(p0, float)
+    p1 = np.asarray(p1, float)
+    dx = p1 - p0
+    if not np.all(np.isfinite(dx)):
+        return np.nan
+    if float(np.linalg.norm(dx)) == 0.0:
+        return 0.0
+
+    qorder = LSQR_EDGE_QUAD_ORDER if quad_order is None else int(quad_order)
+    qx, qw = np.polynomial.legendre.leggauss(qorder)
+    t = 0.5 * (qx + 1.0)
+    w = 0.5 * qw
+    pts = p0[None, :] + t[:, None] * dx[None, :]
+
+    # pts[:,0]=d13, pts[:,1]=d23, pts[:,2]=d12
+    F_d12, F_d13, F_d23 = forces_Umb(pts[:, 2], pts[:, 0], pts[:, 1])
+    integrand = (
+        np.asarray(F_d13, float) * dx[0]
+        + np.asarray(F_d23, float) * dx[1]
+        + np.asarray(F_d12, float) * dx[2]
+    )
+    if not np.all(np.isfinite(integrand)):
+        return np.nan
+    return float(np.sum(w * integrand))
+
+
+
+def _edge_work_quadrature_3d_batch(P0, P1, quad_order=None, edge_batch_size=None):
+    """Vectorized continuous edge integration for many 3D edges.
+
+    Computes dU = integral grad(U) . dq along each edge, where the grid
+    coordinate order is P=(d13,d23,d12).  This is the same continuous
+    Gauss-Legendre edge integral as _edge_work_quadrature_3d, but batched so
+    LSQR can build many RHS equations without a slow Python loop over
+    quadrature evaluations.
+    """
+    P0 = np.asarray(P0, float)
+    P1 = np.asarray(P1, float)
+    if P0.ndim == 1:
+        P0 = P0.reshape(1, 3)
+    if P1.ndim == 1:
+        P1 = P1.reshape(1, 3)
+    if P0.shape != P1.shape or P0.shape[1] != 3:
+        raise ValueError("P0 and P1 must have shape (n_edges,3).")
+
+    n_edges = P0.shape[0]
+    out = np.full(n_edges, np.nan, float)
+    if n_edges == 0:
+        return out
+
+    q_order = LSQR_EDGE_QUAD_ORDER if quad_order is None else int(quad_order)
+    bsz = LSQR_EDGE_BATCH_SIZE if edge_batch_size is None else int(edge_batch_size)
+    bsz = max(1, bsz)
+
+    qx, qw = np.polynomial.legendre.leggauss(q_order)
+    t = 0.5 * (qx + 1.0)
+    w = 0.5 * qw
+
+    for a0 in range(0, n_edges, bsz):
+        a1 = min(a0 + bsz, n_edges)
+        p0 = P0[a0:a1]
+        p1 = P1[a0:a1]
+        dx = p1 - p0
+
+        good = np.all(np.isfinite(p0), axis=1) & np.all(np.isfinite(p1), axis=1) & np.all(np.isfinite(dx), axis=1)
+        zero = good & (np.linalg.norm(dx, axis=1) == 0.0)
+        out[a0:a1][zero] = 0.0
+
+        active = good & (~zero)
+        if not np.any(active):
+            continue
+
+        p0a = p0[active]
+        dxa = dx[active]
+        pts = p0a[:, None, :] + t[None, :, None] * dxa[:, None, :]
+        pts_flat = pts.reshape(-1, 3)
+
+        # pts_flat[:,0]=d13, pts_flat[:,1]=d23, pts_flat[:,2]=d12
+        F_d12, F_d13, F_d23 = forces_Umb(pts_flat[:, 2], pts_flat[:, 0], pts_flat[:, 1])
+        grad = np.column_stack([F_d13, F_d23, F_d12]).reshape(p0a.shape[0], q_order, 3)
+        integrand = np.einsum("eqd,ed->eq", grad, dxa)
+        vals = np.sum(integrand * w[None, :], axis=1)
+        vals[~np.all(np.isfinite(integrand), axis=1)] = np.nan
+
+        batch_out = out[a0:a1]
+        active_idx = np.where(active)[0]
+        batch_out[active_idx] = vals
+        out[a0:a1] = batch_out
+
+    return out
+
 def lsqr_U_on_known_nodes_3d(known_nodes, anchor_g, P_full, Fx, Fy, Fz,
                              n12, n13, n23, feas_mask_flat,
                              atol=1e-10, btol=1e-10, iter_lim=8000,
                              graph_mode=None, knn_k=None, knn_max_dist=None,
-                             extra_edges=None):
+                             extra_edges=None,
+                             use_edge_quadrature=None, quad_order=None):
     known_nodes = np.array(sorted(set(map(int, known_nodes))), dtype=int)
     nk = known_nodes.size
     if nk == 0:
@@ -1201,6 +1588,11 @@ def lsqr_U_on_known_nodes_3d(known_nodes, anchor_g, P_full, Fx, Fy, Fz,
         return np.full(nk, np.nan, float), known_nodes
 
     mode = (LSQR_GRAPH_MODE if graph_mode is None else str(graph_mode)).lower()
+    if use_edge_quadrature is None:
+        use_quad = (str(LSQR_INTEGRATION_MODE).lower() == "continuous") and bool(LSQR_USE_EDGE_QUADRATURE)
+    else:
+        use_quad = bool(use_edge_quadrature)
+    q_order = LSQR_EDGE_QUAD_ORDER if quad_order is None else int(quad_order)
 
     if mode == "knn":
         k_use = int(knn_k if knn_k is not None else LSQR_KNN_K)
@@ -1229,21 +1621,40 @@ def lsqr_U_on_known_nodes_3d(known_nodes, anchor_g, P_full, Fx, Fy, Fz,
     n_skip_nonfinite = 0
     n_skip_clip = 0
 
-    for (ii, jj) in edges:
+    edges_arr = np.asarray(edges, dtype=int)
+    if use_quad and edges_arr.size > 0:
+        # Continuous LSQR RHS, matching the force-only code style:
+        # integrate through in-between quadrature points along each edge.
+        dU_edges = _edge_work_quadrature_3d_batch(
+            P_full[edges_arr[:, 0]],
+            P_full[edges_arr[:, 1]],
+            quad_order=q_order,
+            edge_batch_size=LSQR_EDGE_BATCH_SIZE,
+        )
+    else:
+        dU_edges = None
+
+    for eidx, (ii, jj) in enumerate(edges):
         ii = int(ii); jj = int(jj)
-        Fx_i, Fy_i, Fz_i = Fx[ii], Fy[ii], Fz[ii]
-        Fx_j, Fy_j, Fz_j = Fx[jj], Fy[jj], Fz[jj]
-        if not (np.isfinite(Fx_i) and np.isfinite(Fy_i) and np.isfinite(Fz_i) and
-                np.isfinite(Fx_j) and np.isfinite(Fy_j) and np.isfinite(Fz_j)):
-            n_skip_nonfinite += 1
-            continue
-
-        Fx_mid = 0.5 * (Fx_i + Fx_j)
-        Fy_mid = 0.5 * (Fy_i + Fy_j)
-        Fz_mid = 0.5 * (Fz_i + Fz_j)
-
         dx = P_full[jj] - P_full[ii]
-        dw = +(Fx_mid * dx[0] + Fy_mid * dx[1] + Fz_mid * dx[2])
+
+        if use_quad:
+            dw = float(dU_edges[eidx])
+            if not np.isfinite(dw):
+                n_skip_nonfinite += 1
+                continue
+        else:
+            Fx_i, Fy_i, Fz_i = Fx[ii], Fy[ii], Fz[ii]
+            Fx_j, Fy_j, Fz_j = Fx[jj], Fy[jj], Fz[jj]
+            if not (np.isfinite(Fx_i) and np.isfinite(Fy_i) and np.isfinite(Fz_i) and
+                    np.isfinite(Fx_j) and np.isfinite(Fy_j) and np.isfinite(Fz_j)):
+                n_skip_nonfinite += 1
+                continue
+
+            Fx_mid = 0.5 * (Fx_i + Fx_j)
+            Fy_mid = 0.5 * (Fy_i + Fy_j)
+            Fz_mid = 0.5 * (Fz_i + Fz_j)
+            dw = +(Fx_mid * dx[0] + Fy_mid * dx[1] + Fz_mid * dx[2])
 
         if (not np.isfinite(dw)) or (abs(dw) > float(DW_CLIP)):
             n_skip_clip += 1
@@ -1260,7 +1671,8 @@ def lsqr_U_on_known_nodes_3d(known_nodes, anchor_g, P_full, Fx, Fy, Fz,
 
     M = len(b)
     if LSQR_PRINT_EQUATION_STATS:
-        print(f"[LSQR build] mode={mode} nk={nk} edges_in={len(edges)} "
+        qtxt = f"continuous_quad{q_order}" if use_quad else "endpoint_avg"
+        print(f"[LSQR build] mode={mode} rhs={qtxt} nk={nk} edges_in={len(edges)} "
               f"M={M} skip_nonfinite={n_skip_nonfinite} skip_clip={n_skip_clip}")
 
     if M == 0:
@@ -1279,6 +1691,106 @@ def lsqr_U_on_known_nodes_3d(known_nodes, anchor_g, P_full, Fx, Fy, Fz,
         sol = lsqr(Asub[:, keep], b, atol=atol, btol=btol, iter_lim=iter_lim)[0]
         U[keep] = sol
     U[a_loc] = 0.0
+    U -= U[a_loc]
+    return U, known_nodes
+
+
+def path_integrated_U_on_known_nodes_3d(
+    known_nodes,
+    anchor_g,
+    P_full,
+    n12,
+    n13,
+    n23,
+    feas_mask_flat,
+    graph_mode=None,
+    knn_k=None,
+    knn_max_dist=None,
+    extra_edges=None,
+    quad_order=None,
+):
+    """Assign nodal energies by on-the-fly path integration of exact forces.
+
+    This mirrors the 2D sibling's pathint label source.  It does not read
+    oracle energies and does not solve a global least-squares problem.  It uses
+    the current paid graph, computes local line integrals of the exact
+    force/gradient along neighboring paid-node edges, and propagates energies
+    from the anchor along shortest graph paths.
+    """
+    known_nodes = np.array(sorted(set(map(int, known_nodes))), dtype=int)
+    nk = known_nodes.size
+    if nk == 0:
+        return np.array([], float), known_nodes
+
+    loc = {int(g): i for i, g in enumerate(known_nodes)}
+    if int(anchor_g) not in loc:
+        return np.full(nk, np.nan, float), known_nodes
+
+    mode = (LSQR_GRAPH_MODE if graph_mode is None else str(graph_mode)).lower()
+    q_order = PATHINT_QUAD_ORDER if quad_order is None else int(quad_order)
+
+    if mode == "knn":
+        k_use = int(knn_k if knn_k is not None else LSQR_KNN_K)
+        r_use = knn_max_dist if knn_max_dist is not None else LSQR_KNN_MAX_DIST
+        edges = build_edges_knn_from_nodes(known_nodes, P_full, k=k_use, max_dist=r_use)
+    elif mode == "axis1":
+        edges = build_edges_axis1_from_nodes(known_nodes, n12, n13, n23, feas_mask_flat)
+    else:
+        edges = build_edges_from_nodes(known_nodes, n12, n13, n23, feas_mask_flat)
+
+    if extra_edges:
+        es = set((int(a), int(b)) if int(a) < int(b) else (int(b), int(a)) for (a, b) in edges)
+        for (a, b) in extra_edges:
+            a = int(a); b = int(b)
+            if a == b:
+                continue
+            if (a not in loc) or (b not in loc):
+                continue
+            if (not feas_mask_flat[a]) or (not feas_mask_flat[b]):
+                continue
+            i, j = (a, b) if a < b else (b, a)
+            es.add((i, j))
+        edges = list(es)
+
+    adj = [[] for _ in range(nk)]
+    n_edges = 0
+    n_bad = 0
+
+    for ii, jj in edges:
+        ii = int(ii); jj = int(jj)
+        if (ii not in loc) or (jj not in loc):
+            continue
+        li = loc[ii]; lj = loc[jj]
+        length = float(np.linalg.norm(P_full[jj] - P_full[ii]))
+        dU_ij = _edge_work_quadrature_3d(P_full[ii], P_full[jj], quad_order=q_order)
+        if not np.isfinite(dU_ij):
+            n_bad += 1
+            continue
+        adj[li].append((lj, length, dU_ij))
+        adj[lj].append((li, length, -dU_ij))
+        n_edges += 1
+
+    if LSQR_PRINT_EQUATION_STATS:
+        print(f"[PATHINT build 3D] mode={mode} nk={nk} edges={n_edges} bad_edges={n_bad} quad={q_order}")
+
+    a_loc = loc[int(anchor_g)]
+    dist = np.full(nk, np.inf, float)
+    U = np.full(nk, np.nan, float)
+    dist[a_loc] = 0.0
+    U[a_loc] = 0.0
+    pq = [(0.0, a_loc)]
+
+    while pq:
+        dcur, u = heapq.heappop(pq)
+        if dcur != dist[u]:
+            continue
+        for v, length, dU_uv in adj[u]:
+            nd = dcur + length
+            if nd < dist[v]:
+                dist[v] = nd
+                U[v] = U[u] + dU_uv
+                heapq.heappush(pq, (nd, v))
+
     U -= U[a_loc]
     return U, known_nodes
 
@@ -1747,6 +2259,18 @@ def overlay_train_val_mst_factory(Pall, train_all_idx, train_q_idx, val_idx, anc
             return {"knn_mappable": knn_mappable, "knn_label": CAND_CBAR_LABEL}
         return None
 
+    overlay.figure_data = {
+        "Pall": Pall,
+        "train_all_idx": train_all_idx,
+        "train_q_idx": train_q_idx,
+        "val_idx": val_idx,
+        "anchor_idx": int(anchor_idx),
+        "knn_idx": knn_idx,
+        "knn_score_map": knn_score_map,
+        "mst_allowed_edges_all": mst_allowed_edges_all,
+        "mst_allowed_edges_q": mst_allowed_edges_q,
+        "step0_overlay_edges": step0_overlay_edges,
+    }
     return overlay
 
 # =============================================================================
@@ -1755,8 +2279,8 @@ def overlay_train_val_mst_factory(Pall, train_all_idx, train_q_idx, val_idx, anc
 def plot_rmse_history_each_step(rmse_tr_hist, rmse_val_hist, step_name, target_label, train_set_label="paid"):
     fig, ax = plt.subplots(figsize=FIGSIZE_RMSE)
     its = np.arange(0, len(rmse_tr_hist))
-    ax.plot(its, rmse_tr_hist, "-", lw=5, label=f"Train ({train_set_label},{target_label})")
-    ax.plot(its, rmse_val_hist, "-", lw=5, label=f"Val (oracle,{target_label})")
+    ax.plot(its, rmse_tr_hist, "-", lw=5, label=f"Train")
+    ax.plot(its, rmse_val_hist, "-", lw=5, label=f"Val")
     ax.set_xlabel("AL step", fontsize=AXIS_LABEL_FZ)
     ax.set_ylabel("RMSE", fontsize=AXIS_LABEL_FZ)
     ax.xaxis.set_major_locator(MaxNLocator(integer=True))
@@ -1764,19 +2288,27 @@ def plot_rmse_history_each_step(rmse_tr_hist, rmse_val_hist, step_name, target_l
     ax.tick_params(axis="y", labelsize=TICK_LABEL_FZ, pad=6)
     ax.legend(frameon=False, fontsize=LEGEND_FZ, loc="upper right",
           markerscale=2.0, handlelength=0.5, handletextpad=0.6,
-          labelspacing=0.5, borderpad=0.2, borderaxespad=0.2)    
-    savefig(fig, f"{target_label}_AL_step{step_name}_rmse_trace")
+          labelspacing=0.5, borderpad=0.2, borderaxespad=0.2)
+    fig_name = f"{target_label}_AL_step{step_name}_rmse_trace"
+    save_numeric_figure_data(
+        fig_name,
+        np.column_stack([its, np.asarray(rmse_tr_hist, float), np.asarray(rmse_val_hist, float)]),
+        "al_step,rmse_train,rmse_val",
+    )
+    savefig(fig, fig_name)
 
 def plot_mst_history_each_step(mst_hist, step_name):
     fig, ax = plt.subplots(figsize=FIGSIZE_RMSE)
     steps = np.arange(len(mst_hist))
     ax.plot(steps, mst_hist, "-o", lw=5, ms=16, mfc="none")
     ax.set_xlabel("AL step", fontsize=AXIS_LABEL_FZ)
-    ax.set_ylabel("MST length", fontsize=AXIS_LABEL_FZ)
+    ax.set_ylabel("MST length", fontsize=AXIS_LABEL_FZ, labelpad=18)
     ax.xaxis.set_major_locator(MaxNLocator(integer=True))
     ax.tick_params(axis="x", labelsize=TICK_LABEL_FZ, pad=6)
     ax.tick_params(axis="y", labelsize=TICK_LABEL_FZ, pad=6)
-    savefig(fig, f"Umb_AL_step{step_name}_mst_trace")
+    fig_name = f"W3_AL_step{step_name}_mst_trace"
+    save_numeric_figure_data(fig_name, np.column_stack([steps, np.asarray(mst_hist, float)]), "al_step,mst_length")
+    savefig(fig, fig_name)
 
 def plot_parity_each_step(model, X_tr, y_tr, X_val, y_val, ymu, ysd, step_name, target_label, train_set_label="paid"):
     mu_tr_z, _ = predict_mu_std_z(model, X_tr)
@@ -1785,8 +2317,8 @@ def plot_parity_each_step(model, X_tr, y_tr, X_val, y_val, ymu, ysd, step_name, 
     yhat_val = z2y(mu_val_z, ymu, ysd)
 
     fig, ax = plt.subplots(figsize=FIGSIZE_PARITY)
-    ax.scatter(y_tr, yhat_tr, s=160, alpha=1, label=f"Train ({train_set_label})")
-    ax.scatter(y_val, yhat_val, s=160, alpha=0.35, edgecolors="none", label="Val (oracle)")
+    ax.scatter(y_tr, yhat_tr, s=160, alpha=1, label=f"Train")
+    ax.scatter(y_val, yhat_val, s=160, alpha=0.35, edgecolors="none", label="Val")
 
     allv = np.concatenate([y_tr[np.isfinite(y_tr)], y_val[np.isfinite(y_val)],
                            yhat_tr[np.isfinite(yhat_tr)], yhat_val[np.isfinite(yhat_val)]])
@@ -1798,13 +2330,20 @@ def plot_parity_each_step(model, X_tr, y_tr, X_val, y_val, ymu, ysd, step_name, 
 
     ax.plot([vmin, vmax], [vmin, vmax], "k-", lw=2.0, alpha=0.7)
     ax.set_xlim(vmin, vmax); ax.set_ylim(vmin, vmax)
-    ax.set_xlabel(f"True ({target_label}, anchored)", fontsize=AXIS_LABEL_FZ)
-    ax.set_ylabel(f"Predicted ({target_label}, anchored)", fontsize=AXIS_LABEL_FZ)
-    ax.tick_params(axis="both", labelsize=TICK_LABEL_FZ, pad=6)
+    ax.set_xlabel(r"$W_3^{\mathrm{True}}\,(k_{\mathrm{B}}T)$", fontsize=AXIS_LABEL_FZ)
+    ax.set_ylabel(r"$W_3^{\mathrm{Pred}}\,(k_{\mathrm{B}}T)$", fontsize=AXIS_LABEL_FZ)
+    ax.tick_params(axis="both", labelsize=TICK_LABEL_FZ, pad=AXIS_TICK_PAD_2D,
+                   length=AXIS_TICK_LENGTH, width=AXIS_TICK_WIDTH)
     ax.legend(frameon=False, fontsize=LEGEND_FZ, loc="upper left",
           markerscale=1.5, handlelength=0.2, handletextpad=0.6,
           labelspacing=0.5, borderpad=0.2, borderaxespad=0.2)
-    savefig(fig, f"{target_label}_AL_step{step_name}_parity")
+    fig_name = f"{target_label}_AL_step{step_name}_parity"
+    parity_data = np.row_stack([
+        np.column_stack([np.zeros(len(y_tr)), y_tr, yhat_tr]),
+        np.column_stack([np.ones(len(y_val)), y_val, yhat_val]),
+    ])
+    save_numeric_figure_data(fig_name, parity_data, "set_code_0_train_1_val,true_value,predicted_value")
+    savefig(fig, fig_name)
 
 def plot_lsqr_paid_vs_fullgrid_parity(U_paid, paid_nodes, U_full_map, step_name):
     paid_nodes = np.array(paid_nodes, dtype=int)
@@ -1821,12 +2360,15 @@ def plot_lsqr_paid_vs_fullgrid_parity(U_paid, paid_nodes, U_full_map, step_name)
     vmax = float(np.nanpercentile(np.r_[u_full, u_paid], 99))
     ax.plot([vmin, vmax], [vmin, vmax], "k-", lw=2.0, alpha=0.7)
     ax.set_xlim(vmin, vmax); ax.set_ylim(vmin, vmax)
-    ax.set_xlabel("Full-grid LSQR (anchored Umb)", fontsize=AXIS_LABEL_FZ)
-    ax.set_ylabel("On-the-fly LSQR (anchored Umb)", fontsize=AXIS_LABEL_FZ)
-    ax.tick_params(axis="both", labelsize=TICK_LABEL_FZ, pad=6)
+    ax.set_xlabel(r"Full-grid LSQR $W_3\,(k_{\mathrm{B}}T)$", fontsize=AXIS_LABEL_FZ)
+    ax.set_ylabel(r"On-the-fly LSQR $W_3\,(k_{\mathrm{B}}T)$", fontsize=AXIS_LABEL_FZ)
+    ax.tick_params(axis="both", labelsize=TICK_LABEL_FZ, pad=AXIS_TICK_PAD_2D,
+                   length=AXIS_TICK_LENGTH, width=AXIS_TICK_WIDTH)
     ax.text(0.02, 0.98, f"RMSE = {r:.4f}\nN = {u_full.size}",
             transform=ax.transAxes, va="top", ha="left", fontsize=LEGEND_FZ)
-    savefig(fig, f"LSQR_AL_step{step_name}_paid_vs_fullgrid_parity")
+    fig_name = f"LSQR_AL_step{step_name}_paid_vs_fullgrid_parity"
+    save_numeric_figure_data(fig_name, np.column_stack([u_full, u_paid]), "full_grid_lsqr,on_the_fly_lsqr")
+    savefig(fig, fig_name)
 
 # =============================================================================
 # Force computation on masked feasible region (for LSQR teacher forces)
@@ -1887,7 +2429,7 @@ def plot_all_figs_for_step(step_name, model, plot_g, P_full, P_feas, feas_pos, X
                            step0_overlay_edges=None,
                            target_mode="umb",
                            W2anch_feas=None,
-                           target_label="Umb",
+                           target_label="W3",
                            symmetry_mode="sorted",
                            train_set_label="paid",
                            U_full_map=None, paid_nodes_step=None, U_paid_step=None):
@@ -1946,7 +2488,7 @@ def plot_all_figs_for_step(step_name, model, plot_g, P_full, P_feas, feas_pos, X
 
     plot_scatter3d_color(
         P_feas[plot_pos], mu[plot_pos], LAB_C,
-        f"Umb_AL_step{step_name}_mu_scatter",
+        f"W3_AL_step{step_name}_mu_scatter",
         title=rf"Student $\mu$ (AL step {step_name}), {GRAFT}",
         cmap="viridis", norm=normU, overlay=overlay,
         scatter_swap_xy=False
@@ -1997,88 +2539,88 @@ def plot_all_figs_for_step(step_name, model, plot_g, P_full, P_feas, feas_pos, X
 
     plot_scatter3d_color(
         P_feas[plot_pos], err_scatter, LAB_ABSERR,
-        f"Umb_AL_step{step_name}_abserr_scatter",
+        f"W3_AL_step{step_name}_abserr_scatter",
         title=rf"Absolute error scatter, step {step_name}, {GRAFT}",
-        cmap=ABSERR_CMAP, norm=normErr, overlay=overlay,
+        cmap=ABSERR_CMAP, norm=None, overlay=overlay,
         scatter_swap_xy=False
     )
 
     normS = mpl.colors.Normalize(vmin=float(np.nanmin(std_target)), vmax=float(np.nanmax(std_target)))
     plot_scatter3d_color(
-        P_feas[plot_pos], std_target[plot_pos], r"$\sigma_{\mathrm{pred}}$",
-        f"Umb_AL_step{step_name}_sigma_scatter",
+        P_feas[plot_pos], std_target[plot_pos], r"$\sigma^{\mathrm{Pred}}$",
+        f"W3_AL_step{step_name}_sigma_scatter",
         title=rf"Student $\sigma$ (AL step {step_name}), {GRAFT}",
         cmap="plasma", norm=normS, overlay=overlay,
         scatter_swap_xy=False
     )
 
     plot_slice_2d_heat(D12s, D13s, mu2, mask2,
-        f"Umb_AL_step{step_name}_mu_slice2D",
+        f"W3_AL_step{step_name}_mu_slice2D",
         title=rf"Student $\mu$ diag slice ($d_{{23}}=d_{{13}}$), step {step_name}, {GRAFT}",
         clabel=LAB_C, cmap="viridis", norm=normU
     )
     plot_slice_3d_surface(D12s, D13s, mu2, mask2,
-        f"Umb_AL_step{step_name}_mu_slice3D",
+        f"W3_AL_step{step_name}_mu_slice3D",
         title=rf"Student $\mu$ diag surface ($d_{{23}}=d_{{13}}$), step {step_name}, {GRAFT}",
         clabel=LAB_C, cmap="viridis", norm=normU
     )
 
     plot_slice_2d_heat(D12s, D13s, err_diag, mask2,
-        f"Umb_AL_step{step_name}_abserr_slice2D",
+        f"W3_AL_step{step_name}_abserr_slice2D",
         title=rf"Absolute error diag slice ($d_{{23}}=d_{{13}}$), step {step_name}, {GRAFT}",
-        clabel=LAB_ABSERR, cmap=ABSERR_CMAP, norm=normErr
+        clabel=LAB_ABSERR, cmap=ABSERR_CMAP, norm=None
     )
     plot_slice_3d_surface(D12s, D13s, err_diag, mask2,
-        f"Umb_AL_step{step_name}_abserr_slice3D",
+        f"W3_AL_step{step_name}_abserr_slice3D",
         title=rf"Absolute error diag surface ($d_{{23}}=d_{{13}}$), step {step_name}, {GRAFT}",
-        clabel=LAB_ABSERR, cmap=ABSERR_CMAP, norm=normErr
+        clabel=LAB_ABSERR, cmap=ABSERR_CMAP, norm=None
     )
 
     normSig = mpl.colors.Normalize(vmin=float(np.nanmin(sig2[mask2])), vmax=float(np.nanmax(sig2[mask2])))
     plot_slice_2d_heat(D12s, D13s, sig2, mask2,
-        f"Umb_AL_step{step_name}_sigma_slice2D",
+        f"W3_AL_step{step_name}_sigma_slice2D",
         title=rf"Student $\sigma$ diag slice ($d_{{23}}=d_{{13}}$), step {step_name}, {GRAFT}",
-        clabel=r"$\sigma_{\mathrm{pred}}$", cmap="plasma", norm=normSig
+        clabel=r"$\sigma^{\mathrm{Pred}}$", cmap="plasma", norm=normSig
     )
     plot_slice_3d_surface(D12s, D13s, sig2, mask2,
-        f"Umb_AL_step{step_name}_sigma_slice3D",
+        f"W3_AL_step{step_name}_sigma_slice3D",
         title=rf"Student $\sigma$ diag surface ($d_{{23}}=d_{{13}}$), step {step_name}, {GRAFT}",
-        clabel=r"$\sigma_{\mathrm{pred}}$", cmap="plasma", norm=normSig
+        clabel=r"$\sigma^{\mathrm{Pred}}$", cmap="plasma", norm=normSig
     )
 
     plot_face_2d_heat(d13f, d23f, mu_face, maskf,
-        f"Umb_AL_step{step_name}_mu_face_d12min_slice2D",
+        f"W3_AL_step{step_name}_mu_face_d12min_slice2D",
         title=rf"Student $\mu$ face ($d_{{12}}={D12_MIN:.2f}$), step {step_name}, {GRAFT}",
         clabel=LAB_C, cmap="viridis", norm=normU
     )
     plot_face_3d_surface(D13f, D23f, mu_face, maskf,
-        f"Umb_AL_step{step_name}_mu_face_d12min_slice3D",
+        f"W3_AL_step{step_name}_mu_face_d12min_slice3D",
         title=rf"Student $\mu$ face surface ($d_{{12}}={D12_MIN:.2f}$), step {step_name}, {GRAFT}",
         clabel=LAB_C, cmap="viridis", norm=normU
     )
 
     plot_face_2d_heat(d13f, d23f, err_face, maskf,
-        f"Umb_AL_step{step_name}_abserr_face_d12min_slice2D",
+        f"W3_AL_step{step_name}_abserr_face_d12min_slice2D",
         title=rf"Absolute error face ($d_{{12}}={D12_MIN:.2f}$), step {step_name}, {GRAFT}",
-        clabel=LAB_ABSERR, cmap=ABSERR_CMAP, norm=normErr
+        clabel=LAB_ABSERR, cmap=ABSERR_CMAP, norm=None
     )
     plot_face_3d_surface(D13f, D23f, err_face, maskf,
-        f"Umb_AL_step{step_name}_abserr_face_d12min_slice3D",
+        f"W3_AL_step{step_name}_abserr_face_d12min_slice3D",
         title=rf"Absolute error face surface ($d_{{12}}={D12_MIN:.2f}$), step {step_name}, {GRAFT}",
-        clabel=LAB_ABSERR, cmap=ABSERR_CMAP, norm=normErr
+        clabel=LAB_ABSERR, cmap=ABSERR_CMAP, norm=None
     )
 
     W2sum_diag = W2sum_pairs(D12s, D13s, D23s, p2)
     dW3_diag_ex = mu2 - (W2sum_diag - W2_anchor)
     normDW3_diag = _norm_from_masked(dW3_diag_ex, mask2)
     plot_slice_2d_heat(D12s, D13s, dW3_diag_ex, mask2,
-        f"Umb_AL_step{step_name}_extracted_deltaW3_diag_slice2D",
-        title=rf"Student extracted $\Delta W_3$ diag ($d_{{23}}=d_{{13}}$), step {step_name}, {GRAFT}",
+        f"DeltaW3_AL_step{step_name}_extracted_DeltaW3Pred_diag_slice2D",
+        title=rf"Student extracted $\mathsf{{\Delta}} W_3^{{\mathrm{{Pred}}}}$ diag ($d_{{23}}=d_{{13}}$), step {step_name}, {GRAFT}",
         clabel=LAB_DW3, cmap="viridis", norm=normDW3_diag
     )
     plot_slice_3d_surface(D12s, D13s, dW3_diag_ex, mask2,
-        f"Umb_AL_step{step_name}_extracted_deltaW3_diag_slice3D",
-        title=rf"Student extracted $\Delta W_3$ diag surface, step {step_name}, {GRAFT}",
+        f"DeltaW3_AL_step{step_name}_extracted_DeltaW3Pred_diag_slice3D",
+        title=rf"Student extracted $\mathsf{{\Delta}} W_3^{{\mathrm{{Pred}}}}$ diag surface, step {step_name}, {GRAFT}",
         clabel=LAB_DW3, cmap="viridis", norm=normDW3_diag
     )
 
@@ -2086,13 +2628,13 @@ def plot_all_figs_for_step(step_name, model, plot_g, P_full, P_feas, feas_pos, X
     dW3_face_ex = mu_face - (W2sum_face - W2_anchor)
     normDW3_face = _norm_from_masked(dW3_face_ex, maskf)
     plot_face_2d_heat(d13f, d23f, dW3_face_ex, maskf,
-        f"Umb_AL_step{step_name}_extracted_deltaW3_face_d12min_slice2D",
-        title=rf"Student extracted $\Delta W_3$ face ($d_{{12}}={D12_MIN:.2f}$), step {step_name}, {GRAFT}",
+        f"DeltaW3_AL_step{step_name}_extracted_DeltaW3Pred_face_d12min_slice2D",
+        title=rf"Student extracted $\mathsf{{\Delta}} W_3^{{\mathrm{{Pred}}}}$ face ($d_{{12}}={D12_MIN:.2f}$), step {step_name}, {GRAFT}",
         clabel=LAB_DW3, cmap="viridis", norm=normDW3_face
     )
     plot_face_3d_surface(D13f, D23f, dW3_face_ex, maskf,
-        f"Umb_AL_step{step_name}_extracted_deltaW3_face_d12min_slice3D",
-        title=rf"Student extracted $\Delta W_3$ face surface, step {step_name}, {GRAFT}",
+        f"DeltaW3_AL_step{step_name}_extracted_DeltaW3Pred_face_d12min_slice3D",
+        title=rf"Student extracted $\mathsf{{\Delta}} W_3^{{\mathrm{{Pred}}}}$ face surface, step {step_name}, {GRAFT}",
         clabel=LAB_DW3, cmap="viridis", norm=normDW3_face
     )
 
@@ -2147,12 +2689,16 @@ def main():
     KMODE        = args.kernel_mode
     LABEL_SOURCE = args.label_source
 
-    USE_LSQR = (LABEL_SOURCE == "lsqr")
+    USE_LSQR = LABEL_SOURCE in ("lsqr", "pathint")
     TRAIN_SET_LABEL = "queried" if LABEL_SOURCE == "oracle_queried" else "paid"
 
-    TARGET_LABEL = "Umb" if TARGET_MODE == "umb" else "Residual"
+    TARGET_LABEL = "W3" if TARGET_MODE == "umb" else "Residual"
     print(f"[CONFIG] start_mode={START_MODE}  target_mode={TARGET_MODE}  sym={SYMM_MODE}  "
           f"kernel={KMODE}  label_source={LABEL_SOURCE}  graft={GRAFT}  N3={N3}")
+    if LABEL_SOURCE == "lsqr":
+        print(f"[LSQR RHS] integration_mode={LSQR_INTEGRATION_MODE}  edge_quadrature={LSQR_USE_EDGE_QUADRATURE}  quad_order={LSQR_EDGE_QUAD_ORDER}  batch={LSQR_EDGE_BATCH_SIZE}")
+    if LABEL_SOURCE == "pathint":
+        print(f"[PATHINT RHS] quad_order={PATHINT_QUAD_ORDER}")
 
     os.environ.setdefault("TF_DETERMINISTIC_OPS", "1")
     try:
@@ -2173,6 +2719,8 @@ def main():
     )
     FIG_DIR.mkdir(exist_ok=True)
     print(f"[OUT] FIG_DIR = {FIG_DIR}")
+    if SAVE_FIGURE_DATA:
+        print(f"[OUT] FIG_DATA_DIR = {FIG_DIR / FIG_DATA_SUBDIR}")
 
     rng = np.random.default_rng(SEED)
     p2 = None
@@ -2245,9 +2793,9 @@ def main():
 
     # Oracle plots
     plot_scatter3d_color(
-        P_full[plot_g], U_ref[plot_g], LAB_C,
-        "Umb_01_oracle_Umb_scatter",
-        title=rf"Toy oracle $U_{{\mathrm{{mb}}}}$ (anchored), {GRAFT}",
+        P_full[plot_g], U_ref[plot_g], LAB_W3_TRUE,
+        "W3_01_oracle_W3True_scatter",
+        title=rf"Toy oracle $W_3^{{\mathrm{{True}}}}$, {GRAFT}",
         cmap="viridis", norm=normU,
         cbar_ticks=np.arange(CLIM_MIN, CLIM_MAX + 1e-9, 10) if USE_FIXED_CLIM else None,
         scatter_swap_xy=False
@@ -2255,30 +2803,30 @@ def main():
 
     U2, _, _ = oracle_on_slice(D12s, D13s, p2, p3)
     U2a = U2 - U_anchor_raw
-    plot_slice_2d_heat(D12s, D13s, U2a, mask2, "Umb_01_oracle_Umb_slice2D",
-        title=rf"Toy oracle $U_{{\mathrm{{mb}}}}$ diag slice (anchored), {GRAFT}",
-        clabel=LAB_C, cmap="viridis", norm=normU
+    plot_slice_2d_heat(D12s, D13s, U2a, mask2, "W3_01_oracle_W3True_slice2D",
+        title=rf"Toy oracle $W_3^{{\mathrm{{True}}}}$ diag slice, {GRAFT}",
+        clabel=LAB_W3_TRUE, cmap="viridis", norm=normU
     )
-    plot_slice_3d_surface(D12s, D13s, U2a, mask2, "Umb_01_oracle_Umb_slice3D",
-        title=rf"Toy oracle $U_{{\mathrm{{mb}}}}$ diag surface (anchored), {GRAFT}",
-        clabel=LAB_C, cmap="viridis", norm=normU
+    plot_slice_3d_surface(D12s, D13s, U2a, mask2, "W3_01_oracle_W3True_slice3D",
+        title=rf"Toy oracle $W_3^{{\mathrm{{True}}}}$ diag surface, {GRAFT}",
+        clabel=LAB_W3_TRUE, cmap="viridis", norm=normU
     )
 
     Uface, _, _ = oracle_on_face(D13f, D23f, D12f, p2, p3)
     Uface_a = Uface - U_anchor_raw
-    plot_face_2d_heat(d13f, d23f, Uface_a, maskf, "Umb_01_oracle_Umb_face_d12min_slice2D",
-        title=rf"Toy oracle $U_{{\mathrm{{mb}}}}$ face ($d_{{12}}={D12_MIN:.2f}$) (anchored), {GRAFT}",
-        clabel=LAB_C, cmap="viridis", norm=normU
+    plot_face_2d_heat(d13f, d23f, Uface_a, maskf, "W3_01_oracle_W3True_face_d12min_slice2D",
+        title=rf"Toy oracle $W_3^{{\mathrm{{True}}}}$ face ($d_{{12}}={D12_MIN:.2f}$), {GRAFT}",
+        clabel=LAB_W3_TRUE, cmap="viridis", norm=normU
     )
-    plot_face_3d_surface(D13f, D23f, Uface_a, maskf, "Umb_01_oracle_Umb_face_d12min_slice3D",
-        title=rf"Toy oracle $U_{{\mathrm{{mb}}}}$ face surface ($d_{{12}}={D12_MIN:.2f}$) (anchored), {GRAFT}",
-        clabel=LAB_C, cmap="viridis", norm=normU
+    plot_face_3d_surface(D13f, D23f, Uface_a, maskf, "W3_01_oracle_W3True_face_d12min_slice3D",
+        title=rf"Toy oracle $W_3^{{\mathrm{{True}}}}$ face surface ($d_{{12}}={D12_MIN:.2f}$), {GRAFT}",
+        clabel=LAB_W3_TRUE, cmap="viridis", norm=normU
     )
 
     dW3_flat = W3sw3.ravel(order="C")
-    plot_scatter3d_color(P_full[plot_g], dW3_flat[plot_g], LAB_DW3,
-        "Umb_02_oracle_deltaW3_scatter",
-        title=rf"Toy oracle $\Delta W_3$, {GRAFT}",
+    plot_scatter3d_color(P_full[plot_g], dW3_flat[plot_g], LAB_DW3_TRUE,
+        "DeltaW3_02_oracle_DeltaW3True_scatter",
+        title=rf"Toy oracle $\mathsf{{\Delta}} W_3^{{\mathrm{{True}}}}$, {GRAFT}",
         cmap="viridis", norm=None, scatter_swap_xy=False
     )
 
@@ -2368,7 +2916,7 @@ def main():
     allowed_train_mask = feas_flat & (~is_val)
     allowed_train_mask[int(anchor_g)] = True
 
-    # Val (oracle) targets + standardized val X
+    # Val targets + standardized val X
     y_val_true = U_ref[val_g] if TARGET_MODE == "umb" else RES_ref[val_g]
     X_val = Xs_feas[feas_pos[val_g]]
 
@@ -2387,9 +2935,44 @@ def main():
         Returns:
           train_nodes : nodes used for TRAINING labels (depends on label_source)
           y_phys      : physical labels aligned with train_nodes (Umb or Residual)
-          paid_nodes_lsqr, U_paid_lsqr : for optional LSQR parity figure (only if lsqr)
+          paid_nodes_lsqr, U_paid_lsqr : for optional LSQR/pathint parity figure
         """
         ls = str(label_source).lower()
+
+        if ls == "pathint":
+            U_paid, paid_nodes = path_integrated_U_on_known_nodes_3d(
+                known_nodes=train_all, anchor_g=anchor_g, P_full=P_full,
+                n12=n12, n13=n13, n23=n23, feas_mask_flat=feas_mask_flat,
+                graph_mode=graph_mode,
+                knn_k=LSQR_KNN_K,
+                knn_max_dist=LSQR_KNN_MAX_DIST,
+                extra_edges=extra_edges,
+                quad_order=PATHINT_QUAD_ORDER,
+            )
+            ok = np.isfinite(U_paid)
+            paid_nodes = paid_nodes[ok]
+            U_paid = U_paid[ok]
+            if paid_nodes.size == 0:
+                return np.array([], int), np.array([], float), None, None
+
+            if paid_nodes.size > 0:
+                u_true = np.asarray(U_ref[paid_nodes], float)
+                err = U_paid - u_true
+                bias = float(np.mean(err))
+                print(
+                    "[PATHINT vs ORACLE paid] "
+                    f"n={paid_nodes.size} "
+                    f"RMSE={np.sqrt(np.mean(err**2)):.6e} "
+                    f"MAE={np.mean(np.abs(err)):.6e} "
+                    f"bias={bias:.6e} "
+                    f"RMSE_bias_removed={np.sqrt(np.mean((err-bias)**2)):.6e} "
+                    f"maxabs={np.max(np.abs(err)):.6e}"
+                )
+
+            y = U_paid.copy()
+            if TARGET_MODE == "residual":
+                y = y - W2anch_flat[paid_nodes]
+            return paid_nodes, y, paid_nodes, U_paid
 
         if ls == "lsqr":
             U_paid, paid_nodes = lsqr_U_on_known_nodes_3d(
@@ -2768,10 +3351,10 @@ def main():
     # ===== Summary traces =====
     fig, ax = plt.subplots(figsize=FIGSIZE_RMSE)
     its = np.arange(1, len(rmse_tr_hist) + 1)
-    ax.plot(its, rmse_tr_hist, "-", lw=5, ms=80, label=f"Train ({TRAIN_SET_LABEL},{TARGET_LABEL})")
-    ax.plot(its, rmse_val_hist, "-", lw=5, ms=80, label=f"Val (oracle,{TARGET_LABEL})")
+    ax.plot(its, rmse_tr_hist, "-", lw=5, ms=80, label=f"Train")
+    ax.plot(its, rmse_val_hist, "-", lw=5, ms=80, label=f"Val")
     ax.set_xlabel("Iteration", fontsize=AXIS_LABEL_FZ)
-    ax.set_ylabel(f"RMSE ({TARGET_LABEL})", fontsize=AXIS_LABEL_FZ)
+    ax.set_ylabel("RMSE", fontsize=AXIS_LABEL_FZ)
     ax.set_xlim(0.5, len(its) + 0.5)
     ax.xaxis.set_major_locator(MaxNLocator(integer=True))
     ax.tick_params(axis="x", labelsize=TICK_LABEL_FZ, pad=6)
@@ -2779,7 +3362,12 @@ def main():
     ax.legend(frameon=False, fontsize=LEGEND_FZ, loc="upper right",
           markerscale=2.0, handlelength=2.0, handletextpad=0.6,
           labelspacing=0.5, borderpad=0.2, borderaxespad=0.2)    
-    savefig(fig, f"{TARGET_LABEL}_90_rmse_vs_iter")
+    save_numeric_figure_data(
+        "W3_90_rmse_vs_iter",
+        np.column_stack([its, np.asarray(rmse_tr_hist, float), np.asarray(rmse_val_hist, float)]),
+        "iteration,rmse_train,rmse_val",
+    )
+    savefig(fig, "W3_90_rmse_vs_iter")
 
     fig, ax = plt.subplots(figsize=FIGSIZE_RMSE)
     steps = np.arange(len(mst_hist))
@@ -2789,7 +3377,8 @@ def main():
     ax.xaxis.set_major_locator(MaxNLocator(integer=True))
     ax.tick_params(axis="x", labelsize=TICK_LABEL_FZ, pad=6)
     ax.tick_params(axis="y", labelsize=TICK_LABEL_FZ, pad=6)
-    savefig(fig, "Umb_91_mst_vs_iter")
+    save_numeric_figure_data("W3_91_mst_vs_iter", np.column_stack([steps, np.asarray(mst_hist, float)]), "al_step,mst_length")
+    savefig(fig, "W3_91_mst_vs_iter")
 
     steps_out = np.arange(len(rmse_tr_hist), dtype=int)
 
@@ -2811,3 +3400,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
